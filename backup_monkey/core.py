@@ -26,7 +26,7 @@ log = logging.getLogger(__name__)
 class BackupMonkey(object):
     def __init__(self, region, max_snapshots_per_volume):
         self._region = region
-        self._prefix = 'BACKUP_MONKEY'
+#        self._prefix = 'BACKUP_MONKEY'
         self._snapshots_per_volume = max_snapshots_per_volume
         
         log.info("Connecting to region %s", self._region)
@@ -37,23 +37,53 @@ class BackupMonkey(object):
             log.critical('No AWS credentials found. To configure Boto, please read: http://boto.readthedocs.org/en/latest/boto_config_tut.html')
             raise BackupMonkeyException('No AWS credentials found')            
 
+    def get_resource_tags(resource_id):
+    resource_tags = {}
+    if resource_id:
+        tags = conn.get_all_tags({ 'resource-id': resource_id })
+        for tag in tags:
+            # Tags starting with 'aws:' are reserved for internal use
+            if not tag.name.startswith('aws:'):
+                resource_tags[tag.name] = tag.value
+    return resource_tags
     
+    def set_resource_tags(resource, tags):
+    for tag_key, tag_value in tags.iteritems():
+        if tag_key not in resource.tags or resource.tags[tag_key] != tag_value:
+            print 'Tagging %(resource_id)s with [%(tag_key)s: %(tag_value)s]' % {
+                'resource_id': resource.id,
+                'tag_key': tag_key,
+                'tag_value': tag_value
+            }
+            resource.add_tag(tag_key, tag_value)
+            
     def snapshot_volumes(self):
         ''' Loops through all EBS volumes and creates snapshots of them '''
         
         log.info('Getting list of EBS volumes')
         volumes = self._conn.get_all_volumes()
+        
+    	# Get all the instances Reservation id 
+        self._prefix=self._conn.get_all_instances()
+        
         log.info('Found %d volumes', len(volumes))
+        i=0
         for volume in volumes:            
-            description_parts = [self._prefix]
+#            description_parts = [self._prefix]
+# Extract tags associated with instance Reservation Id and append it to Description Parts
+	        description_parts=[self._prefix[i].instances[0].tags['Name']]
+	        i=i+1
+	        tags_volume = get_resource_tags(volume.id)
             description_parts.append(volume.id)
+            
             if volume.attach_data.instance_id:
                 description_parts.append(volume.attach_data.instance_id)
             if volume.attach_data.device:
                 description_parts.append(volume.attach_data.device)
             description = ' '.join(description_parts)
             log.info('Creating snapshot of %s: %s', volume.id, description)
-            volume.create_snapshot(description)
+            current_snap = volume.create_snapshot(description)
+            set_resource_tags(current_snap, tags_volume)
         return True
 
 
@@ -66,14 +96,16 @@ class BackupMonkey(object):
         snapshots = self._conn.get_all_snapshots(owner='self')
         log.info('Found %d snapshots', len(snapshots))
         vol_snap_map = {}
+        j=0
         for snapshot in snapshots:
-            if not snapshot.description.startswith(self._prefix):
+            #if not snapshot.description.startswith(self._prefix):
+            if not snapshot.description.startswith(self._prefix[j].instances[0].tags['Name']):
                 log.debug('Skipping %s as prefix does not match', snapshot.id)
                 continue
             if not snapshot.status == 'completed':
                 log.debug('Skipping %s as it is not a complete snapshot', snapshot.id)
                 continue
-            
+            j=j+1
             log.debug('Found %s: %s', snapshot.id, snapshot.description)
             vol_snap_map.setdefault(snapshot.volume_id, []).append(snapshot)
             
